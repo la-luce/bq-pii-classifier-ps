@@ -48,23 +48,23 @@ resource "google_project_service" "run_api" {
 locals {
 
   project_and_domains = distinct([
-  for entry in var.domain_mapping : {
-    project = entry["project"],
-    domain  = entry["domain"]
-  }
+    for entry in var.domain_mapping : {
+      project = entry["project"],
+      domain  = entry["domain"]
+    }
   ])
 
   # Only projects with configured domains
   project_and_domains_filtered = [for entry in local.project_and_domains : entry if entry["domain"] != ""]
 
   datasets_and_domains = distinct(flatten([
-  for entry in var.domain_mapping : [
-  for dataset in lookup(entry, "datasets", []) : {
-    project = entry["project"],
-    dataset = dataset["name"],
-    domain  = dataset["domain"]
-  }
-  ]
+    for entry in var.domain_mapping : [
+      for dataset in lookup(entry, "datasets", []) : {
+        project = entry["project"],
+        dataset = dataset["name"],
+        domain  = dataset["domain"]
+      }
+    ]
   ]))
 
   # Only datasets with configured domains
@@ -72,12 +72,12 @@ locals {
 
   # Get distinct domains set on project entries
   project_domains = distinct([
-  for entry in local.project_and_domains_filtered : entry["domain"]
+    for entry in local.project_and_domains_filtered : entry["domain"]
   ])
 
   # Get distinct domains set on dataset level
   dataset_domains = distinct([
-  for entry in local.datasets_and_domains_filtered : entry["domain"]
+    for entry in local.datasets_and_domains_filtered : entry["domain"]
   ])
 
   // Concat project and dataset domains and filter out empty strings
@@ -94,37 +94,37 @@ locals {
 
   auto_dlp_results_latest_view = "${var.auto_dlp_results_table_name}_latest_v1"
 
-  taxonomy_numbers = distinct([for x in var.classification_taxonomy: x["taxonomy_number"]])
+  taxonomy_numbers = distinct([for x in var.classification_taxonomy : x["taxonomy_number"]])
 
   // this return a list of lists like [ ["europe-west3","dwh","1"], ["europe-west3","dwh","2"], ["europe-west3","marketing","1"], ["europe-west3","marketing","2"], etc ]
   taxonomies_to_be_created = setproduct(tolist(var.source_data_regions), local.domains, local.taxonomy_numbers)
 
-  inspection_templates_count = max([for x in var.classification_taxonomy: x["inspection_template_number"]]...)
+  inspection_templates_count = max([for x in var.classification_taxonomy : x["inspection_template_number"]]...)
 
   info_types_map = {
-  for item in var.classification_taxonomy : item["info_type"] => {
-    classification = item["classification"],
-    labels         = item["labels"]
-  }
+    for item in var.classification_taxonomy : item["info_type"] => {
+      classification = item["classification"],
+      labels         = item["labels"]
+    }
   }
 
   created_dlp_inspection_templates = module.dlp[*].created_inspection_templates
 }
 
 module "data-catalog" {
-  count = length(local.taxonomies_to_be_created)
-  source = "../../modules/data-catalog"
+  count   = length(local.taxonomies_to_be_created)
+  source  = "../../modules/data-catalog"
   project = var.project
-  region = local.taxonomies_to_be_created[count.index][0]
+  region  = local.taxonomies_to_be_created[count.index][0]
 
-  domain = local.taxonomies_to_be_created[count.index][1]
+  domain          = local.taxonomies_to_be_created[count.index][1]
   taxonomy_number = local.taxonomies_to_be_created[count.index][2]
 
   // only use the nodes that are marked for taxonomy number x
-  classification_taxonomy = [for x in var.classification_taxonomy: x if x["taxonomy_number"] == local.taxonomies_to_be_created[count.index][2]]
+  classification_taxonomy = [for x in var.classification_taxonomy : x if x["taxonomy_number"] == local.taxonomies_to_be_created[count.index][2]]
 
   data_catalog_taxonomy_activated_policy_types = var.data_catalog_taxonomy_activated_policy_types
-  taxonomy_name_suffix = var.taxonomy_name_suffix
+  taxonomy_name_suffix                         = var.taxonomy_name_suffix
 }
 
 
@@ -136,13 +136,13 @@ module "bigquery" {
   logging_sink_sa = module.cloud_logging.service_account
 
   # Data for config views
-  created_policy_tags             = local.created_policy_tags
-  dataset_domains_mapping         = local.datasets_and_domains_filtered
-  projects_domains_mapping        = local.project_and_domains_filtered
-  standard_dlp_results_table_name = var.standard_dlp_results_table_name
-  inspection_templates_count = local.inspection_templates_count
+  created_policy_tags                = local.created_policy_tags
+  dataset_domains_mapping            = local.datasets_and_domains_filtered
+  projects_domains_mapping           = local.project_and_domains_filtered
+  standard_dlp_results_table_name    = var.standard_dlp_results_table_name
+  inspection_templates_count         = local.inspection_templates_count
   terraform_data_deletion_protection = var.terraform_data_deletion_protection
-  default_labels = var.default_labels
+  default_labels                     = var.default_labels
 }
 
 module "cloud_logging" {
@@ -157,7 +157,7 @@ module "cloud_logging" {
 
 # deploy 1 dlp inspection template in each source data region
 module "dlp" {
-  count = length(var.source_data_regions)
+  count                   = length(var.source_data_regions)
   source                  = "../../modules/dlp"
   project                 = var.project
   region                  = tolist(var.source_data_regions)[count.index] # create inspection template in the same region as source data
@@ -185,15 +185,15 @@ module "cloud_scheduler" {
 }
 
 module "iam" {
-  source = "../../modules/iam"
-  project = var.project
-  sa_tagger = var.sa_tagger
-  sa_tagger_tasks = var.sa_tagger_tasks
-  taxonomy_parent_tags = local.created_parent_tags
-  iam_mapping = var.iam_mapping
-  dlp_service_account = var.dlp_service_account
-  tagger_role = var.tagger_role
-  sa_tagging_dispatcher = var.sa_tagging_dispatcher
+  source                      = "../../modules/iam"
+  project                     = var.project
+  sa_tagger                   = var.sa_tagger
+  sa_tagger_tasks             = var.sa_tagger_tasks
+  taxonomy_parent_tags        = local.created_parent_tags
+  iam_mapping                 = var.iam_mapping
+  dlp_service_account         = var.dlp_service_account
+  tagger_role                 = var.tagger_role
+  sa_tagging_dispatcher       = var.sa_tagging_dispatcher
   sa_tagging_dispatcher_tasks = var.sa_tagging_dispatcher_tasks
   bq_results_dataset          = module.bigquery.results_dataset
 }
@@ -208,10 +208,10 @@ module "cloud-run-tagging-dispatcher" {
   invoker_service_account_email = module.iam.sa_tagging_dispatcher_tasks_email
   default_labels                = var.default_labels
   # Dispatcher could take time to list large number of tables
-  timeout_seconds               = var.dispatcher_service_timeout_seconds
-  max_containers                = 1
-  max_cpu                       = 2
-  environment_variables         = [
+  timeout_seconds = var.dispatcher_service_timeout_seconds
+  max_containers  = 1
+  max_cpu         = 2
+  environment_variables = [
     {
       name  = "TAGGER_TOPIC",
       value = module.pubsub-tagger.topic-name,
@@ -225,7 +225,7 @@ module "cloud-run-tagging-dispatcher" {
       value = var.data_region,
     },
     {
-      name = "SOURCE_DATA_REGIONS",
+      name  = "SOURCE_DATA_REGIONS",
       value = jsonencode(var.source_data_regions),
     },
     {
@@ -257,8 +257,8 @@ module "cloud-run-tagging-dispatcher" {
       value = module.bigquery.logging_table
     },
     {
-    name = "DLP_INSPECTION_TEMPLATES_IDS",
-    value = jsonencode(local.created_dlp_inspection_templates),
+      name  = "DLP_INSPECTION_TEMPLATES_IDS",
+      value = jsonencode(local.created_dlp_inspection_templates),
     },
   ]
 }
@@ -273,11 +273,11 @@ module "cloud-run-tagger" {
   invoker_service_account_email = module.iam.sa_tagger_tasks_email
   default_labels                = var.default_labels
   # no more than 80 requests at a time to handle BigQuery API rate limiting
-  max_containers                = 1
-  max_requests_per_container    = 80
+  max_containers             = 1
+  max_requests_per_container = 80
   # Tagger is using BigQuery BATCH queries that could take time to get started
-  timeout_seconds               = var.tagger_service_timeout_seconds
-  environment_variables         = [
+  timeout_seconds = var.tagger_service_timeout_seconds
+  environment_variables = [
     {
       name  = "IS_DRY_RUN_TAGS",
       value = var.is_dry_run_tags,
@@ -345,15 +345,15 @@ module "cloud-run-tagger" {
 // PubSub
 
 module "pubsub-tagging-dispatcher" {
-  source                                  = "../../modules/pubsub"
-  project                                 = var.project
-  subscription_endpoint                   = module.cloud-run-tagging-dispatcher.service_endpoint
-  subscription_name                       = var.dispatcher_pubsub_sub
-  subscription_service_account            = module.iam.sa_tagging_dispatcher_tasks_email
-  topic                                   = var.dispatcher_pubsub_topic
-  topic_publishers_sa_emails              = [var.cloud_scheduler_account]
+  source                       = "../../modules/pubsub"
+  project                      = var.project
+  subscription_endpoint        = module.cloud-run-tagging-dispatcher.service_endpoint
+  subscription_name            = var.dispatcher_pubsub_sub
+  subscription_service_account = module.iam.sa_tagging_dispatcher_tasks_email
+  topic                        = var.dispatcher_pubsub_topic
+  topic_publishers_sa_emails   = [var.cloud_scheduler_account]
   # use a deadline large enough to process BQ listing for large scopes
-  subscription_ack_deadline_seconds       = var.dispatcher_subscription_ack_deadline_seconds
+  subscription_ack_deadline_seconds = var.dispatcher_subscription_ack_deadline_seconds
   # avoid resending dispatcher messages if things went wrong and the msg was NAK (e.g. timeout expired, app error, etc)
   # min value must be at equal to the ack_deadline_seconds
   subscription_message_retention_duration = var.dispatcher_subscription_message_retention_duration
@@ -362,17 +362,17 @@ module "pubsub-tagging-dispatcher" {
 }
 
 module "pubsub-tagger" {
-  source                                  = "../../modules/pubsub"
-  project                                 = var.project
-  subscription_endpoint                   = module.cloud-run-tagger.service_endpoint
-  subscription_name                       = var.tagger_pubsub_sub
-  subscription_service_account            = module.iam.sa_tagger_tasks_email
-  topic                                   = var.tagger_pubsub_topic
+  source                       = "../../modules/pubsub"
+  project                      = var.project
+  subscription_endpoint        = module.cloud-run-tagger.service_endpoint
+  subscription_name            = var.tagger_pubsub_sub
+  subscription_service_account = module.iam.sa_tagger_tasks_email
+  topic                        = var.tagger_pubsub_topic
   // Tagging Dispatcher and DLP service account must be able to publish messages to the Tagger
-  topic_publishers_sa_emails              = [module.iam.sa_tagging_dispatcher_email, var.dlp_service_account]
+  topic_publishers_sa_emails = [module.iam.sa_tagging_dispatcher_email, var.dlp_service_account]
   # Tagger is using BigQuery queries in BATCH mode to avoid INTERACTIVE query concurency limits and they might take longer time to execute under heavy load
   # 10m is max allowed
-  subscription_ack_deadline_seconds       = var.tagger_subscription_ack_deadline_seconds
+  subscription_ack_deadline_seconds = var.tagger_subscription_ack_deadline_seconds
   # How long to retain unacknowledged messages in the subscription's backlog, from the moment a message is published.
   # In case of unexpected problems we want to avoid a buildup that re-trigger functions
   subscription_message_retention_duration = var.tagger_subscription_message_retention_duration
