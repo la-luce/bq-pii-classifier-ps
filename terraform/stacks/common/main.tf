@@ -21,12 +21,17 @@ resource "google_project_service" "enable_service_usage_api" {
   disable_on_destroy = false
 }
 
-# Enable Cloud Scheduler API
-resource "google_project_service" "enable_cloud_scheduler" {
-  project = var.project
-  service = "cloudscheduler.googleapis.com"
+# The Cloud Scheduler API is enabled in the root module so that both the tagging and inspection
+# stacks can depend on it.
 
-  disable_on_destroy = false
+# App Engine is no longer needed (Cloud Scheduler doesn't require it). Stop managing the old
+# resource without disabling the API in existing deployments.
+removed {
+  from = google_project_service.enable_appengine
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 # Enable Cloud Build API
@@ -180,8 +185,6 @@ module "cloud_scheduler" {
   datasets_exclude_list = var.datasets_exclude_list
   tables_exclude_list   = var.tables_exclude_list
   cron_expression       = var.cron_expression
-
-  depends_on = [google_project_service.enable_cloud_scheduler]
 }
 
 module "iam" {

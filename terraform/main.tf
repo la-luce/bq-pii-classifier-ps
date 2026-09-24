@@ -62,6 +62,15 @@ locals {
   ))
 }
 
+# Cloud Scheduler API is needed by the tagging and inspection scheduler jobs, and it creates the
+# Cloud Scheduler service agent that is granted Pub/Sub publish access. Both stacks depend on it.
+resource "google_project_service" "enable_cloud_scheduler" {
+  project = var.project
+  service = "cloudscheduler.googleapis.com"
+
+  disable_on_destroy = false
+}
+
 
 module "gcs" {
   source                  = "./modules/gcs"
@@ -127,6 +136,8 @@ module "common-stack" {
   taxonomy_name_suffix           = var.taxonomy_name_suffix
   terraform_data_deletion_protection = var.terraform_data_deletion_protection
   default_labels                 = var.default_labels
+
+  depends_on = [google_project_service.enable_cloud_scheduler]
 }
 
 module "inspection-stack" {
@@ -174,6 +185,8 @@ module "inspection-stack" {
   inspector_service_timeout_seconds                  = var.inspector_service_timeout_seconds
   inspector_subscription_ack_deadline_seconds        = var.inspector_subscription_ack_deadline_seconds
   inspector_subscription_message_retention_duration  = var.inspector_subscription_message_retention_duration
+
+  depends_on = [google_project_service.enable_cloud_scheduler]
 }
 
 # Helper functions for data analysis
