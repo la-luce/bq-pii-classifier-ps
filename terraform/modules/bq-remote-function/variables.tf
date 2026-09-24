@@ -90,7 +90,84 @@ variable "cf_available_cpu" {
   default = "2"
 }
 
-variable "datastore_database_name" {
+##### Networking (Redis is only reachable over a private IP in this VPC)
+
+variable "vpc_network_name" {
+  description = "Name of the existing VPC network that Redis is attached to and the VPC connector is created in"
+  type        = string
+}
+
+variable "vpc_network_project" {
+  description = "Project hosting the VPC network (e.g. Shared VPC host project). Defaults to var.project"
+  type        = string
+  default     = null
+}
+
+variable "vpc_connector_name" {
+  description = "Name of the Serverless VPC Access connector (max 25 chars, lowercase letters, digits and hyphens)"
+  type        = string
+  default     = "policy-tags-connector"
+}
+
+variable "vpc_connector_ip_cidr_range" {
+  description = "Unused /28 range in the VPC for the connector. Ignored if vpc_connector_subnet_name is set"
+  type        = string
+  default     = "10.8.0.0/28"
+}
+
+variable "vpc_connector_subnet_name" {
+  description = "Optional existing dedicated /28 subnet for the connector (required for Shared VPC). Takes precedence over vpc_connector_ip_cidr_range"
+  type        = string
+  default     = null
+}
+
+variable "vpc_connector_machine_type" {
   type    = string
-  default = "(default)"
+  default = "e2-micro"
+}
+
+variable "vpc_connector_min_instances" {
+  type    = number
+  default = 2
+}
+
+variable "vpc_connector_max_instances" {
+  type    = number
+  default = 3
+}
+
+##### Memorystore for Redis cache
+
+variable "redis_instance_name" {
+  description = "Name of the Memorystore for Redis instance (lowercase letters, digits and hyphens)"
+  type        = string
+  default     = "policy-tags-cache"
+}
+
+variable "redis_tier" {
+  description = "BASIC or STANDARD_HA"
+  type        = string
+  default     = "BASIC"
+}
+
+variable "redis_memory_size_gb" {
+  type    = number
+  default = 1
+}
+
+variable "redis_version" {
+  type    = string
+  default = "REDIS_7_0"
+}
+
+variable "redis_connect_mode" {
+  description = "DIRECT_PEERING, or PRIVATE_SERVICE_ACCESS (required for Shared VPC; needs private services access configured on the network)"
+  type        = string
+  default     = "DIRECT_PEERING"
+}
+
+variable "cache_ttl_seconds" {
+  description = "How long policy tag display names are cached in Redis"
+  type        = number
+  default     = 3600
 }

@@ -20,48 +20,82 @@ import functions_framework
 from google.cloud import bigquery
 from google.cloud.datacatalog import PolicyTagManagerClient
 from google.cloud import datacatalog_v1
-from google.cloud import datastore
-import datetime
-import pytz  # Import the pytz library
+import redis
 import logging
 import google.cloud.logging
 
 
-class DatastoreCache:
-    def __init__(self, kind='PolicyTagsCache', database_name='(default)'):
-        self.datastore_client = datastore.Client(database=database_name)
-        self.kind = kind
+class RedisCache:
+    """Caches policy tag display names in Memorystore for Redis.
+
+    The cache fails open: if Redis is unreachable or returns an error, a warning is logged and
+    callers fall back to the Data Catalog API as if it were a cache miss.
+    """
+
+    def __init__(self, host, port, password=None, ca_cert=None, key_prefix='PolicyTagsCache:',
+                 timeout_seconds=2):
+        self.key_prefix = key_prefix
+        # redis.Redis is thread-safe and pools connections, so one instance is shared across requests
+        self.redis_client = redis.Redis(
+            host=host,
+            port=port,
+            password=password or None,
+            ssl=bool(ca_cert),
+            ssl_ca_data=ca_cert or None,
+            socket_timeout=timeout_seconds,
+            socket_connect_timeout=timeout_seconds,
+            health_check_interval=30,
+            decode_responses=True,
+        )
 
     def get(self, key):
-        """Retrieves a cached value from Datastore."""
-        key = self.datastore_client.key(self.kind, key)
-        entity = self.datastore_client.get(key)
-
-        if entity and 'value' in entity and 'expiration' in entity:
-            # Make now timezone-aware (assuming UTC)
-            now_aware = datetime.datetime.now(pytz.utc)
-
-            if entity['expiration'] > now_aware:
-                return entity['value']
-            else:
-                # Expired entry, delete it
-                self.datastore_client.delete(key)
-
-        return None  # Cache miss or expired entry
+        """Retrieves a cached value from Redis. Returns None on cache miss or Redis error."""
+        try:
+            return self.redis_client.get(self.key_prefix + key)
+        except redis.RedisError as e:
+            logging.warning(f"Redis cache GET failed for key {key}. Falling back to API. Error: {e}")
+            return None
 
     def add(self, key, value, expiration_seconds=3600):
-        """Adds or updates a cached value in Datastore with an expiration time."""
-        key = self.datastore_client.key(self.kind, key)
-        entity = datastore.Entity(key=key)
+        """Adds or updates a cached value in Redis with an expiration time (TTL is enforced by Redis)."""
+        try:
+            self.redis_client.set(self.key_prefix + key, value, ex=expiration_seconds)
+        except redis.RedisError as e:
+            logging.warning(f"Redis cache SET failed for key {key}. Error: {e}")
 
-        # Make expiration timezone-aware (assuming UTC)
-        expiration = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=expiration_seconds)
 
-        entity.update({
-            'value': value,
-            'expiration': expiration
-        })
-        self.datastore_client.put(entity)
+class NoOpCache:
+    """Used when Redis is not configured, so that lookups always go to the API."""
+
+    def get(self, key):
+        return None
+
+    def add(self, key, value, expiration_seconds=3600):
+        pass
+
+
+_cache = None
+
+# How long policy tag display names are cached, in seconds
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
+
+
+def get_cache():
+    """Lazily creates a process-wide cache so Redis connections are reused across requests."""
+    global _cache
+    if _cache is None:
+        redis_host = os.environ.get("REDIS_HOST")
+        if redis_host:
+            _cache = RedisCache(
+                host=redis_host,
+                port=int(os.environ.get("REDIS_PORT", "6379")),
+                password=os.environ.get("REDIS_AUTH"),
+                ca_cert=os.environ.get("REDIS_CA_CERT"),
+            )
+        else:
+            logging.warning("REDIS_HOST is not set. Policy tag display names will not be cached.")
+            _cache = NoOpCache()
+    return _cache
 
 
 def get_columns_and_policy_tags(project_id, dataset_id, table_id):
@@ -97,7 +131,7 @@ def get_policy_tag_display_names(policy_tags, cache):
     for tag_id in tag_ids:
         if tag_id:
             try:
-                # 1) get from datastore
+                # 1) get from the Redis cache
                 cached_policy_tag_display_name = cache.get(tag_id)
                 if cached_policy_tag_display_name:
                     display_names[tag_id] = cached_policy_tag_display_name
@@ -105,7 +139,7 @@ def get_policy_tag_display_names(policy_tags, cache):
                     # API call
                     tag = datacatalog_client.get_policy_tag(name=tag_id)
                     display_names[tag_id] = tag.display_name
-                    cache.add(tag_id, tag.display_name)
+                    cache.add(tag_id, tag.display_name, expiration_seconds=CACHE_TTL_SECONDS)
             except Exception as e:
                 display_names[tag_id] = f'Failed to retrieve policy tag display name for {tag_id}. Exception: {e}'
 
@@ -138,8 +172,6 @@ def combine_policy_tags(policy_tags_ids, policy_tags_names):
 @functions_framework.http
 def process_request(request):
 
-    datastore_cache_db_name = os.environ.get("DATASTORE_CACHE_DB_NAME")
-
     # Instantiates a client
     logging_client = google.cloud.logging.Client()
 
@@ -159,8 +191,8 @@ def process_request(request):
         calls_count = len(calls)
         logging.info(f"Received {calls_count} calls from BQ.")
 
-        # create a cache for policy tags display names
-        cache = DatastoreCache(database_name=datastore_cache_db_name)
+        # get the shared cache for policy tags display names
+        cache = get_cache()
 
         replies = []
         for call in calls:

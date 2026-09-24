@@ -192,6 +192,13 @@ module "bq-remote-func-get-table-policy-tags" {
   deployment_procedure_path = "modules/bq-remote-function/procedures/deploy_get_policy_tags_remote_func.tpl"
   cloud_functions_sa_extra_roles = []
 
+  vpc_network_name            = var.vpc_network_name
+  vpc_network_project         = var.vpc_network_project
+  vpc_connector_ip_cidr_range = var.vpc_connector_ip_cidr_range
+  vpc_connector_subnet_name   = var.vpc_connector_subnet_name
+  redis_tier                  = var.redis_tier
+  redis_connect_mode          = var.redis_connect_mode
+
   depends_on             = [module.common-stack]
 }
 
