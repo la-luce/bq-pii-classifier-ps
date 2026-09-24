@@ -16,6 +16,11 @@ source_data_regions    = ["europe-west3", "eu"]
 # BigQuery dataset to include solution's resources
 bigquery_dataset_name = "bq_pii_classifier"
 
+# Existing VPC network used by Memorystore for Redis (cache for the get-policy-tags remote function)
+vpc_network_name = "default"
+# Unused /28 range in the VPC for the Serverless VPC Access connector
+vpc_connector_ip_cidr_range = "10.8.0.0/28"
+
 # BigQuery table to store discovery service results
 auto_dlp_results_table_name = "auto_dlp_results"
 

@@ -22,25 +22,94 @@ resource "random_id" "run_id" {
   }
 }
 
-##### Enable datastore API because the function is using it as a cache layer
+##### Memorystore for Redis is used by the function as a cache layer
 
-resource "google_project_service" "datastore_api" {
-  service            = "datastore.googleapis.com"
-  disable_on_destroy = false                     # Prevent accidental disabling during Terraform destroy
+locals {
+  vpc_network_project = coalesce(var.vpc_network_project, var.project)
+  vpc_network_id      = "projects/${local.vpc_network_project}/global/networks/${var.vpc_network_name}"
 }
 
-resource "google_firestore_database" "datastore_mode_database" {
-  project                           = var.project
-  name                              = var.datastore_database_name
-  location_id                       = var.compute_region
-  type                              = "DATASTORE_MODE"
-  concurrency_mode                  = "OPTIMISTIC"
-  app_engine_integration_mode       = "DISABLED"
-  point_in_time_recovery_enablement = "POINT_IN_TIME_RECOVERY_DISABLED"
-  delete_protection_state           = "DELETE_PROTECTION_DISABLED"
-  deletion_policy                   = "DELETE"
+resource "google_project_service" "redis_api" {
+  project            = var.project
+  service            = "redis.googleapis.com"
+  disable_on_destroy = false
+}
 
-  depends_on = [google_project_service.datastore_api]
+resource "google_project_service" "vpcaccess_api" {
+  project            = var.project
+  service            = "vpcaccess.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "secretmanager_api" {
+  project            = var.project
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_redis_instance" "cache" {
+  project                 = var.project
+  name                    = var.redis_instance_name
+  region                  = var.compute_region # same region as the cloud function
+  tier                    = var.redis_tier
+  memory_size_gb          = var.redis_memory_size_gb
+  redis_version           = var.redis_version
+  authorized_network      = local.vpc_network_id
+  connect_mode            = var.redis_connect_mode
+  auth_enabled            = true
+  transit_encryption_mode = "SERVER_AUTHENTICATION"
+
+  # all keys are written with a TTL; evict least recently used keys if memory is full
+  redis_configs = {
+    maxmemory-policy = "volatile-lru"
+  }
+
+  depends_on = [google_project_service.redis_api]
+}
+
+# Serverless VPC Access connector so the function can reach the Redis private IP
+resource "google_vpc_access_connector" "connector" {
+  project       = var.project
+  name          = var.vpc_connector_name
+  region        = var.compute_region # same region as the cloud function
+  machine_type  = var.vpc_connector_machine_type
+  min_instances = var.vpc_connector_min_instances
+  max_instances = var.vpc_connector_max_instances
+
+  # Either create the connector on a new /28 range in the network, or on an existing dedicated /28 subnet
+  network       = var.vpc_connector_subnet_name == null ? var.vpc_network_name : null
+  ip_cidr_range = var.vpc_connector_subnet_name == null ? var.vpc_connector_ip_cidr_range : null
+
+  dynamic "subnet" {
+    for_each = var.vpc_connector_subnet_name == null ? [] : [1]
+    content {
+      name       = var.vpc_connector_subnet_name
+      project_id = local.vpc_network_project
+    }
+  }
+
+  depends_on = [google_project_service.vpcaccess_api]
+}
+
+# Redis AUTH string is exposed to the function via Secret Manager rather than a plain env variable
+resource "google_secret_manager_secret" "redis_auth" {
+  project   = var.project
+  secret_id = "${var.redis_instance_name}-auth"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.compute_region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager_api]
+}
+
+resource "google_secret_manager_secret_version" "redis_auth" {
+  secret      = google_secret_manager_secret.redis_auth.id
+  secret_data = google_redis_instance.cache.auth_string
 }
 
 ##### BigQuery Connection
@@ -67,13 +136,20 @@ resource "google_project_iam_member" "sa_function_roles" {
   project  = var.project
   for_each = toset(concat([
     "roles/logging.logWriter",
-    "roles/artifactregistry.reader",
-    "roles/datastore.user"
+    "roles/artifactregistry.reader"
   ],
     var.cloud_functions_sa_extra_roles
   ))
   role   = each.key
   member = "serviceAccount:${google_service_account.sa_function.email}"
+}
+
+# Allow the function SA to read the Redis AUTH string
+resource "google_secret_manager_secret_iam_member" "sa_function_redis_auth" {
+  project   = var.project
+  secret_id = google_secret_manager_secret.redis_auth.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.sa_function.email}"
 }
 
 #####################################################
@@ -126,14 +202,30 @@ resource "google_cloudfunctions2_function" "function" {
     timeout_seconds                  = var.cf_timeout_seconds
     max_instance_request_concurrency = var.cf_max_instance_request_concurrency
     available_cpu                    = var.cf_available_cpu
-    environment_variables            = merge(var.env_variables,
-      {name = "TERRAFORM_RUN_ID", value = random_id.run_id.hex},
-      {name = "DATASTORE_CACHE_DB_NAME", value = google_firestore_database.datastore_mode_database.name}
-    ) # to force TF to deploy the function on each run
-    ingress_settings                 = "ALLOW_INTERNAL_ONLY"
-    all_traffic_on_latest_revision   = true
-    service_account_email            = google_service_account.sa_function.email
+    environment_variables = merge(var.env_variables, {
+      TERRAFORM_RUN_ID  = random_id.run_id.hex # to force TF to deploy the function on each run
+      REDIS_HOST        = google_redis_instance.cache.host
+      REDIS_PORT        = tostring(google_redis_instance.cache.port)
+      REDIS_CA_CERT     = join("\n", [for c in google_redis_instance.cache.server_ca_certs : c.cert])
+      CACHE_TTL_SECONDS = tostring(var.cache_ttl_seconds)
+    })
+    secret_environment_variables {
+      key        = "REDIS_AUTH"
+      project_id = var.project
+      secret     = google_secret_manager_secret.redis_auth.secret_id
+      version    = "latest"
+    }
+    vpc_connector                  = google_vpc_access_connector.connector.id
+    vpc_connector_egress_settings  = "PRIVATE_RANGES_ONLY"
+    ingress_settings               = "ALLOW_INTERNAL_ONLY"
+    all_traffic_on_latest_revision = true
+    service_account_email          = google_service_account.sa_function.email
   }
+
+  depends_on = [
+    google_secret_manager_secret_version.redis_auth,
+    google_secret_manager_secret_iam_member.sa_function_redis_auth,
+  ]
 }
 
 

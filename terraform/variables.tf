@@ -138,6 +138,43 @@ variable "bq_remote_func_get_policy_tags_name" {
   default = "get_table_policy_tags"
 }
 
+# Networking and Memorystore for Redis used as a cache by the get-policy-tags remote function
+
+variable "vpc_network_name" {
+  description = "Name of an existing VPC network for Memorystore for Redis and the Serverless VPC Access connector"
+  type        = string
+}
+
+variable "vpc_network_project" {
+  description = "Project hosting the VPC network (e.g. Shared VPC host project). Defaults to var.project"
+  type        = string
+  default     = null
+}
+
+variable "vpc_connector_ip_cidr_range" {
+  description = "Unused /28 range in the VPC for the Serverless VPC Access connector. Ignored if vpc_connector_subnet_name is set"
+  type        = string
+  default     = "10.8.0.0/28"
+}
+
+variable "vpc_connector_subnet_name" {
+  description = "Optional existing dedicated /28 subnet for the Serverless VPC Access connector (required for Shared VPC)"
+  type        = string
+  default     = null
+}
+
+variable "redis_tier" {
+  description = "Memorystore for Redis tier: BASIC or STANDARD_HA"
+  type        = string
+  default     = "BASIC"
+}
+
+variable "redis_connect_mode" {
+  description = "Memorystore for Redis connect mode: DIRECT_PEERING or PRIVATE_SERVICE_ACCESS (required for Shared VPC)"
+  type        = string
+  default     = "DIRECT_PEERING"
+}
+
 
 variable "tagging_dispatcher_pubsub_topic" {
   type = string
