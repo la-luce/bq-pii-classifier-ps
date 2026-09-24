@@ -52,3 +52,8 @@ We need a Docker Repository to publish images that are used by this solution
 gcloud artifacts repositories create $DOCKER_REPO_NAME --repository-format=docker \
 --project=PROJECT_ID --location=$COMPUTE_REGION --description="Docker repository"
 ```
+
+### Prepare Networking for the Redis Cache
+
+The solution uses Memorystore for Redis on an **existing** VPC network (e.g. your landing zone Shared VPC).
+Follow the [Redis Cache Setup](../README.md#redis-cache-setup-do-this-before-running-terraform) steps before running Terraform.
