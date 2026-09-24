@@ -22,12 +22,11 @@ resource "google_project_service" "enable_service_usage_api" {
 }
 
 # Enable Cloud Scheduler API
-resource "google_project_service" "enable_appengine" {
+resource "google_project_service" "enable_cloud_scheduler" {
   project = var.project
-  service = "appengine.googleapis.com"
+  service = "cloudscheduler.googleapis.com"
 
-  disable_dependent_services = true
-  disable_on_destroy         = false
+  disable_on_destroy = false
 }
 
 # Enable Cloud Build API
@@ -182,7 +181,7 @@ module "cloud_scheduler" {
   tables_exclude_list   = var.tables_exclude_list
   cron_expression       = var.cron_expression
 
-  depends_on = [google_project_service.enable_appengine]
+  depends_on = [google_project_service.enable_cloud_scheduler]
 }
 
 module "iam" {
