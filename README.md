@@ -1,5 +1,24 @@
 # BigQuery PII Classifier
 
+> [!WARNING]
+> **This fork is for new deployments only.**
+>
+> Starting fresh? You're in the right place. 🌱 We built this fork of
+> [GoogleCloudPlatform/bq-pii-classifier](https://github.com/GoogleCloudPlatform/bq-pii-classifier)
+> (the *upstream* repository) for teams that haven't deployed the upstream solution yet. Here,
+> *new* means new to this solution, not a brand-new environment: it's designed to work with the
+> data projects, pipelines, and networks you already have. For details, see
+> [What this touches in your environment](#what-this-touches-in-your-environment).
+>
+> Already running the upstream solution? Keep using the upstream repository. This fork doesn't
+> include a migration path, so if you apply its Terraform configuration to an existing upstream
+> deployment, Terraform changes or deletes existing resources. For example, it permanently deletes
+> the Firestore in Datastore mode database that the upstream solution uses as a cache for its
+> `get-policy-tags` function. By default, that's your project's `(default)` database.
+>
+> Not sure which applies to you? Contact your Google Cloud team before you deploy. We'd much rather
+> help you with `terraform plan` than with the cleanup after `terraform apply`.
+
 ### Updates
 
 * Cloud Data Loss Prevention (Cloud DLP) is now a part of Sensitive Data Protection. The API name remains the same: Cloud Data Loss Prevention API (DLP API). For information about the services that make up Sensitive Data Protection, see [Sensitive Data Protection overview](https://cloud.google.com/dlp/docs/sensitive-data-protection-overview).
@@ -69,6 +88,134 @@ Using `discovery-service-mode` offers the following benefits:
 * Relying on sensitive data discovery service heuristics to determine when to trigger a table scan. 
 * Visualizing data profiles (i.e. tables, columns, PII types, metrics, etc) from the GCP console (UI).
 * Accessing GCP Cloud Support for the product (sensitive data discovery service only, not this custom solution).
+
+## What this touches in your environment
+
+This solution is additive: it doesn't replace anything you already run. The only new thing it
+needs is a host project for each environment. From there, it works with the data projects,
+pipelines, Sensitive Data Protection setup, and networks you already have.
+
+| Where | What happens |
+|-------|--------------|
+| **Solution host project** (new and dedicated, one per environment) | Terraform creates the solution here: Cloud Run services, Pub/Sub topics, Cloud Scheduler jobs, a BigQuery dataset, policy tag taxonomies, DLP inspection templates, the `get-policy-tags` function, and a Memorystore for Redis instance. |
+| **Your existing VPC network** | You prepare a connector subnet, firewall rules, and network permissions. See [Redis Cache Setup](#redis-cache-setup-do-this-before-running-terraform). |
+| **Each data project in scope** | The solution's service accounts get IAM roles, such as BigQuery Data Owner for the Tagger. These grants only add members; they never replace existing bindings. In standard mode, Terraform makes the grants, so its service account needs permission to set IAM policies on each data project. In discovery-service mode, you run a script instead, and Terraform doesn't touch your data projects. |
+| **Tables in scope** | The Tagger attaches policy tags to columns that contain PII and adds labels to tables. Your data itself doesn't change. |
+
+Your security team will probably ask for the exact roles. They're listed in
+[`prepare_data_projects_for_standard_mode.sh`](scripts/prepare_data_projects_for_standard_mode.sh)
+and [`prepare_data_projects_for_auto_dlp_mode.sh`](scripts/prepare_data_projects_for_auto_dlp_mode.sh).
+
+Two things to know before you turn it on:
+
+* **Tagging changes who can read columns. That's the point.** By default, the solution enforces
+  access control on its policy tags. Anyone without the Fine-Grained Reader role on a column's
+  policy tag can't read that column, and queries that reference it fail with an access-denied
+  error, even through views and authorized views. Grant readers with the `iam_mapping` variable
+  before you turn on enforcement.
+* **Existing policy tags stay put.** The Tagger only changes tags from the taxonomies it created.
+  If a column already has a policy tag from another taxonomy, the Tagger keeps it and logs a
+  warning.
+
+### If you already use Sensitive Data Protection
+
+If you already run the discovery service, we recommend discovery-service mode. It tags columns
+based on your discovery data profiles instead of running its own DLP inspection jobs, so you don't
+pay to scan the same tables twice. Your scan configuration needs a few updates, which the
+[discovery-service guide](docs/guide-discovery-service.md#configure-discovery-service-on-gcp)
+walks through:
+
+* Use the inspection templates that Terraform creates, so every infoType that discovery reports
+  maps to a policy tag.
+* Save data profile copies to the solution's BigQuery table, and publish Pub/Sub notifications to
+  the Tagger topic.
+* For organization-level scan configurations, the guide uses the solution host project as the
+  service agent container, so discovery charges are billed to that project.
+
+These are changes to your existing discovery setup, so bring its owner in early.
+
+### If you run separate dev, test, and prod environments
+
+Deploy the solution once per environment, each in its own host project:
+
+* Use a separate `.tfvars` file for each environment, scoped to that environment's data projects,
+  including its Cortex projects if you have them.
+* Keep Terraform state separate. The state bucket name in the
+  [setup guide](docs/common-terraform-1-prepare.md) includes the host project ID, so this happens
+  automatically.
+* Prepare a connector subnet in each environment's network.
+* Expect different policy tag IDs in each environment, because each deployment creates its own
+  taxonomies.
+
+Then promote configuration changes the way you promote code: dev first, then test, then prod.
+
+### If you already use Cortex Framework
+
+Cortex datasets are regular BigQuery datasets, so the solution treats your Cortex projects like any
+other data project. A few tips to keep your pipelines and dashboards happy:
+
+* **Include your Cortex location.** The solution creates policy tags only in the locations that
+  you list in `source_data_regions`, so it can't tag tables anywhere else. Scheduled runs skip
+  those datasets with only a warning in the logs, which makes this one easy to miss. Add the
+  location of your Cortex datasets, such as `"us"` for the US multi-region.
+* **Tag where personal data lands first.** Start with your raw and CDC datasets. Policy tags are
+  enforced on every query that reads a tagged column, so reporting views built on those tables are
+  protected too. Reporting tables are different: they hold their own copy of the data, so keep them
+  in scope as well. Use `domain_mapping` to assign each Cortex dataset to a domain, and use
+  `datasets_exclude_list` to skip reference datasets with no personal data, such as calendar and
+  currency tables.
+* **Watch for jobs that rebuild tables.** Rebuilding a table drops any policy tag that isn't part
+  of the new definition. Until the next tagging run, anyone who can read the table can read every
+  column. In Dataform, incremental actions update tables in place and keep their tags, but
+  `type: "table"` actions and full refreshes rebuild the table with `CREATE OR REPLACE`. For those
+  tables, declare the tags in the SQLX file with `bigqueryPolicyTags`, and use compilation
+  variables so each environment points at its own taxonomy. To attach tags, the Dataform service
+  account needs `bigquery.tables.setCategory` on the table and `datacatalog.taxonomies.get` on the
+  taxonomy in the solution host project. That's the same pair of permissions the Tagger uses.
+* **Give pipelines and dashboards access before you enforce.** Anything that reads a tagged column
+  needs Fine-Grained Reader, including `MERGE` statements in your CDC pipelines. Add these
+  identities to `iam_mapping` for each domain and classification they read:
+  * The service account your Dataform workflows run as: either the Dataform service agent
+    (`service-PROJECT_NUMBER@gcp-sa-dataform.iam.gserviceaccount.com`) or your custom service
+    account.
+  * Any other service accounts that run your Cortex pipelines.
+  * BI service accounts, such as the one Looker uses.
+
+  A Google group makes this easier: add the group to `iam_mapping` once, and then manage its
+  members without another Terraform run.
+
+  If dashboard users should see masked values instead of errors, look at
+  [BigQuery data masking](https://cloud.google.com/bigquery/docs/column-data-masking-intro), which
+  you configure outside this solution.
+* **Existing Cortex policy tags win.** If your Cortex deployment already applies policy tags (for
+  example, through Data Mesh access policies), the Tagger leaves those columns alone. To avoid a
+  patchwork, decide which tool owns the tags for each dataset, and exclude the rest from this
+  solution's scope.
+
+> [!TIP]
+> The `v_log_tag_history` view in the solution's BigQuery dataset records what the Tagger did (or,
+> in dry-run mode, would do) to every column. Rows with a `KEEP_EXISTING` or
+> `DRY_RUN_KEEP_EXISTING` operation are columns where another tool, such as Cortex, already owns
+> the tag. The `new_policy_tag` column has the IDs to paste into `bigqueryPolicyTags`.
+
+### Roll out gradually
+
+A few switches make a slow, safe rollout easy:
+
+| Variable | Effect |
+|----------|--------|
+| `is_dry_run_tags = "True"` and `is_dry_run_labels = "True"` | The Tagger logs what it would do and changes nothing. |
+| `data_catalog_taxonomy_activated_policy_types = []` | Tags are applied, but access isn't restricted. |
+| `projects_include_list`, `datasets_include_list`, `datasets_exclude_list`, `tables_exclude_list` | Controls which tables are in scope. Start small. |
+
+We recommend this path:
+
+1. In dev, run in dry-run mode and review the `v_log_tag_history` view.
+2. Apply tags without enforcement.
+3. Grant readers through `iam_mapping`.
+4. Turn on enforcement, and run your pipelines and dashboards end to end. They'll tell you quickly
+   if anyone is missing from `iam_mapping`.
+5. Promote to test, then prod.
 
 ## Redis Cache Setup (do this before running Terraform)
 
