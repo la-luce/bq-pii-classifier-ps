@@ -168,7 +168,7 @@ other data project. A few tips to keep your pipelines and dashboards happy:
   of the new definition. Until the next tagging run, anyone who can read the table can read every
   column. In Dataform, incremental actions update tables in place and keep their tags, but
   `type: "table"` actions and full refreshes rebuild the table with `CREATE OR REPLACE`. For those
-  tables, declare the tags in the SQLX file with `bigqueryPolicyTags`, and use compilation
+  tables, declare the tags (so they are compiled to generate SQLX file with `bigqueryPolicyTags`), and use compilation
   variables so each environment points at its own taxonomy. To attach tags, the Dataform service
   account needs `bigquery.tables.setCategory` on the table and `datacatalog.taxonomies.get` on the
   taxonomy in the solution host project. That's the same pair of permissions the Tagger uses.
